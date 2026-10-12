@@ -83,33 +83,42 @@ func (s *Server) Stop() error {
 func (s *Server) handle(connection net.Conn) {
 	defer connection.Close()
 	encoder := json.NewEncoder(connection)
+
+	// send writes one response, with its own deadline so a stuck client can't block us.
+	send := func(r response) {
+		_ = connection.SetWriteDeadline(time.Now().Add(defaultCallTimeout))
+		_ = encoder.Encode(r)
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			_ = encoder.Encode(response{Error: fmt.Sprintf("remote method panicked: %v", recovered)})
+			send(response{Error: fmt.Sprintf("remote method panicked: %v", recovered)})
 		}
 	}()
+
+	// A client that connects and sends nothing gets an error instead of hanging us.
+	_ = connection.SetReadDeadline(time.Now().Add(defaultCallTimeout))
 
 	decoder := json.NewDecoder(bufio.NewReader(io.LimitReader(connection, maxRequestBytes+1)))
 	var req request
 	if err := decoder.Decode(&req); err != nil {
-		_ = encoder.Encode(response{Error: fmt.Sprintf("invalid request: %v", err)})
+		send(response{Error: fmt.Sprintf("invalid request: %v", err)})
 		return
 	}
 	if err := validateRequest(req); err != nil {
-		_ = encoder.Encode(response{Error: err.Error()})
+		send(response{Error: err.Error()})
 		return
 	}
 	result, err := s.invoke(req)
 	if err != nil {
-		_ = encoder.Encode(response{Error: err.Error()})
+		send(response{Error: err.Error()})
 		return
 	}
 	payload, err := json.Marshal(result)
 	if err != nil {
-		_ = encoder.Encode(response{Error: fmt.Sprintf("encode result: %v", err)})
+		send(response{Error: fmt.Sprintf("encode result: %v", err)})
 		return
 	}
-	_ = encoder.Encode(response{OK: true, Value: payload})
+	send(response{OK: true, Value: payload})
 }
 
 // TODO 5: Reject empty or unsafe method names, too many arguments, arguments
@@ -153,11 +162,22 @@ func validateRequest(req request) error {
 // your chosen assignment protocol requires another result or argument rule.
 // invoke finds a method, converts JSON arguments to its parameter types, and calls it.
 func (s *Server) invoke(req request) (any, error) {
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+
 	method := reflect.ValueOf(s.receiver).MethodByName(req.Method)
 	if !method.IsValid() {
 		return nil, fmt.Errorf("unknown method %q", req.Method)
 	}
 	typeOfMethod := method.Type()
+
+	// Refuse shapes the protocol can't represent, before any application code runs.
+	if typeOfMethod.IsVariadic() {
+		return nil, fmt.Errorf("method %q is variadic, which is not supported", req.Method)
+	}
+	if n := typeOfMethod.NumOut(); n > 2 || (n == 2 && !typeOfMethod.Out(1).Implements(errorType)) {
+		return nil, fmt.Errorf("method %q has an unsupported return shape", req.Method)
+	}
+
 	if typeOfMethod.NumIn() != len(req.Args) {
 		return nil, fmt.Errorf("method %q expects %d arguments, got %d", req.Method, typeOfMethod.NumIn(), len(req.Args))
 	}
@@ -176,7 +196,7 @@ func (s *Server) invoke(req request) (any, error) {
 	if len(outputs) == 0 {
 		return nil, nil
 	}
-	if last := outputs[len(outputs)-1]; last.Type().Implements(reflect.TypeOf((*error)(nil)).Elem()) {
+	if last := outputs[len(outputs)-1]; last.Type().Implements(errorType) {
 		if !isNilValue(last) {
 			return nil, last.Interface().(error)
 		}
