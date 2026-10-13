@@ -54,8 +54,8 @@ func NewServer(receiver any) (*Server, error) {
 	return &Server{receiver: receiver}, nil
 }
 
-
-// Start begins accepting remote calls at address. Use port 0 to request an available port.
+// TODO 1: Create the TCP listener, reject duplicate starts, save lifecycle state,
+// and launch the accept loop without blocking the caller.
 // Start begins accepting remote calls at address. Use port 0 to request an available port.
 func (s *Server) Start(address string) error {
 	s.mu.Lock()
@@ -83,6 +83,7 @@ func (s *Server) Start(address string) error {
 
 	return nil
 }
+
 // acceptLoop accepts connections until Stop signals it to quit. Every accepted
 // connection is handed to its own goroutine so slow clients cannot block others.
 // acceptLoop accepts connections until Stop signals it to quit. Every accepted
@@ -122,8 +123,7 @@ func (s *Server) acceptLoop(started chan<- struct{}) {
 	}
 }
 
-
-
+// TODO 2: Return the listener address safely while allowing port 0 discovery.
 // Address returns the address assigned to the running server.
 func (s *Server) Address() string {
 	s.mu.Lock()
@@ -135,6 +135,8 @@ func (s *Server) Address() string {
 	return s.listener.Addr().String()
 }
 
+// TODO 3: Close the listener, signal the accept loop, wait for its workers,
+// and leave the server in a state where Start can be called again.
 // Stop stops accepting new connections and waits for active handlers to finish.
 func (s *Server) Stop() error {
 	s.mu.Lock()
@@ -169,6 +171,11 @@ func (s *Server) Stop() error {
 	return err
 }
 
+// TODO 4: Study this starter request handler, then complete and test the protocol
+// contract. Add tests for malformed JSON, oversized input, remote errors, panics,
+// and successful calls, and make sure one bad request cannot crash the server or
+// leave a connection hanging. Connect this handler to your completed Start and
+// Stop lifecycle so each accepted connection is processed by a worker safely.
 // handle reads one request, invokes it, and writes one response.
 func (s *Server) handle(connection net.Conn) {
 	defer connection.Close()
@@ -209,6 +216,8 @@ func (s *Server) handle(connection net.Conn) {
 	send(response{OK: true, Value: payload})
 }
 
+// TODO 5: Reject empty or unsafe method names, too many arguments, arguments
+// larger than maxArgumentBytes, and requests larger than maxRequestBytes.
 // validateRequest rejects malformed or abusive requests before reflection runs.
 func validateRequest(req request) error {
 	if req.Method == "" {
@@ -240,6 +249,12 @@ func validateRequest(req request) error {
 	return nil
 }
 
+// TODO 6: Study and test this starter reflection bridge. Your required work is to
+// support and test exported methods with zero arguments, typed arguments, no
+// return value, one return value, and a final error return; unknown methods,
+// wrong argument counts, invalid JSON arguments, returned errors, and panics must
+// become clear errors instead of crashing the server. Extend the bridge only when
+// your chosen assignment protocol requires another result or argument rule.
 // invoke finds a method, converts JSON arguments to its parameter types, and calls it.
 func (s *Server) invoke(req request) (any, error) {
 	errorType := reflect.TypeOf((*error)(nil)).Elem()
@@ -319,6 +334,8 @@ func NewClient(address string) (*Client, error) {
 	return &Client{Address: address, Timeout: defaultCallTimeout}, nil
 }
 
+// TODO 7: Open one connection, apply a deadline, encode the request, read one
+// response, return remote errors, and decode the response into out.
 // Call invokes method and decodes its result into out. Pass nil for no result.
 func (c *Client) Call(method string, out any, args ...any) error {
 	if method == "" {
